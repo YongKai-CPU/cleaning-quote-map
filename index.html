@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Klang Valley Map</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { height: 100%; overflow: hidden; }
+    #map {
+      height: 100%;
+      width: 100%;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<script>
+  // Configuration - CUSTOMIZE THESE VALUES
+  const CONFIG = {
+    serviceCenter: [3.1390, 101.6869], // KL City Center
+    basePrice: 80,
+    pricePerKm: 0.50,
+    maxServiceRadius: 50, // km
+    defaultZoom: 10, // Zoomed out to show entire Klang Valley region
+    selectedZoom: 14
+  };
+
+  // Initialize map
+  var map = L.map('map', {
+    zoomControl: true,
+    attributionControl: true
+  }).setView(CONFIG.serviceCenter, CONFIG.defaultZoom);
+
+  // Add OpenStreetMap tiles
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(map);
+
+  // Add service area circle
+  var serviceAreaCircle = L.circle(CONFIG.serviceCenter, {
+    radius: CONFIG.maxServiceRadius * 1000,
+    color: '#3498db',
+    fillColor: '#3498db',
+    fillOpacity: 0.1,
+    weight: 2,
+    dashArray: '5, 10'
+  }).addTo(map);
+
+  // Variable to store customer marker
+  var customerMarker = null;
+
+  // Calculate distance between two points (Haversine formula)
+  function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  }
+
+  // Send data to parent window
+  function sendDataToParent(data) {
+    // Send via postMessage to parent window
+    if (window.parent) {
+      window.parent.postMessage({
+        type: 'LOCATION_SELECTED',
+        data: data
+      }, '*'); // In production, replace '*' with your actual domain
+    }
+  }
+
+  // Add customer marker and calculate quote - OPTIMIZED FOR SPEED
+  function selectLocation(lat, lon) {
+    // Remove existing customer marker
+    if (customerMarker) {
+      map.removeLayer(customerMarker);
+    }
+
+    // Calculate distance and price
+    const distance = calculateDistance(
+      CONFIG.serviceCenter[0],
+      CONFIG.serviceCenter[1],
+      lat,
+      lon
+    );
+
+    const travelCharge = distance * CONFIG.pricePerKm;
+    const totalPrice = CONFIG.basePrice + travelCharge;
+    const withinServiceArea = distance <= CONFIG.maxServiceRadius;
+
+    // Add new customer marker - NO POPUP for instant response
+    customerMarker = L.marker([lat, lon], {
+      icon: L.icon({
+        iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+          <svg width="30" height="40" xmlns="http://www.w3.org/2000/svg">
+            <path d="M15 0C8.4 0 3 5.4 3 12c0 8 12 28 12 28s12-20 12-28c0-6.6-5.4-12-12-12z" fill="${withinServiceArea ? '#27ae60' : '#e67e22'}"/>
+            <circle cx="15" cy="12" r="6" fill="white"/>
+          </svg>
+        `),
+        iconSize: [30, 40],
+        iconAnchor: [15, 40]
+      })
+    }).addTo(map);
+
+    // Prepare data to send to parent
+    const dataToSend = {
+      latitude: parseFloat(lat.toFixed(6)),
+      longitude: parseFloat(lon.toFixed(6)),
+      distance: parseFloat(distance.toFixed(2)),
+      basePrice: CONFIG.basePrice,
+      travelCharge: parseFloat(travelCharge.toFixed(2)),
+      totalPrice: parseFloat(totalPrice.toFixed(2)),
+      withinServiceArea: withinServiceArea
+    };
+
+    // Send to parent window IMMEDIATELY
+    sendDataToParent(dataToSend);
+
+    // Log to console for debugging
+    console.log('Location selected:', dataToSend);
+  }
+
+  // Handle map click - INSTANT RESPONSE, NO API CALLS
+  map.on('click', function(e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
+    // Place marker and send data IMMEDIATELY (no API delay)
+    selectLocation(lat, lon);
+  });
+
+  // Listen for messages from parent (optional - for receiving search queries)
+  window.addEventListener('message', function(event) {
+    // Security: In production, check event.origin
+
+    if (event.data.type === 'SEARCH_LOCATION') {
+      const query = event.data.query;
+      searchLocation(query);
+    }
+  });
+
+  // Search location function - OPTIMIZED (can be called from parent)
+  function searchLocation(address) {
+    if (!address) return;
+
+    const bounds = {
+      minLat: CONFIG.serviceCenter[0] - 0.45,
+      maxLat: CONFIG.serviceCenter[0] + 0.45,
+      minLon: CONFIG.serviceCenter[1] - 0.45,
+      maxLon: CONFIG.serviceCenter[1] + 0.45
+    };
+
+    const searchQuery = encodeURIComponent(address + ", Malaysia");
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?` +
+      `format=json` +
+      `&q=${searchQuery}` +
+      `&countrycodes=my` +
+      `&limit=1` +
+      `&viewbox=${bounds.minLon},${bounds.maxLat},${bounds.maxLon},${bounds.minLat}` +
+      `&bounded=0`;
+
+    fetch(nominatimUrl)
+      .then(response => response.json())
+      .then(data => {
+        if (data.length > 0) {
+          const result = data[0];
+          const lat = parseFloat(result.lat);
+          const lon = parseFloat(result.lon);
+
+          selectLocation(lat, lon);
+        } else {
+          console.log('Location not found');
+          sendDataToParent({ error: 'Location not found' });
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        sendDataToParent({ error: 'Search error' });
+      });
+  }
+
+  // No welcome popup - faster loading
+
+  // Notify parent that map is ready
+  if (window.parent) {
+    window.parent.postMessage({
+      type: 'MAP_READY'
+    }, '*');
+  }
+</script>
+
+</body>
+</html>
